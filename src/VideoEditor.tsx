@@ -8,6 +8,8 @@ import { clamp, normalizeBox, type Region } from './geometry'
 import { renderImage, type Effect } from './processImage'
 import { detectVideoFaces, loadVideoDetectors, type VideoDetectors } from './videoDetection'
 import { updateTracks, type FaceTrack } from './videoTracking'
+import { canShareFile, downloadFile, isTouchDevice, shareFile } from './mobileMedia'
+import { hitRegion } from './touchRegions'
 
 type Props = { file: File; onReplace: () => void; onClose: () => void }
 type VideoInfo = { width: number; height: number; duration: number }
@@ -86,6 +88,9 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
   const [time, setTime] = useState(0)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [readyFile, setReadyFile] = useState<File | null>(null)
+  const [readyUrl, setReadyUrl] = useState('')
+  const [readyToExport, setReadyToExport] = useState(false)
 
   settingsRef.current = { effect, strength, padding, showOriginal }
   fixedRef.current = fixedRegions
@@ -95,6 +100,15 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
     setUrl(objectUrl)
     return () => URL.revokeObjectURL(objectUrl)
   }, [file])
+
+  useEffect(() => {
+    if (!readyFile) { setReadyUrl(''); return }
+    const objectUrl = URL.createObjectURL(readyFile)
+    setReadyUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [readyFile])
+
+  useEffect(() => { setReadyFile(null) }, [fixedRegions, effect, strength, padding])
 
   useEffect(() => {
     aliveRef.current = true
@@ -312,6 +326,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
     facesRef.current = []
     lastMediaTimeRef.current = -1
     video.currentTime = value
+    setReadyToExport(false)
     setTime(value)
   }
 
@@ -332,6 +347,15 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
       return
     }
     setError('')
+    setReadyFile(null)
+    if (video.currentTime > 0.01) {
+      video.pause()
+      cancelLoop()
+      video.currentTime = 0
+      setReadyToExport(true)
+      setMessage('Video rewound. Tap Start export to record the edited clip.')
+      return
+    }
     setMessage('Preparing your video…')
     try {
       settingsRef.current.showOriginal = false
@@ -339,18 +363,12 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
       video.pause()
       cancelLoop()
       const audio = ensureAudio()
-      await audio.context.resume()
+      // Start audio and playback from the export button's user gesture on Android.
+      const resumeAudio = audio.context.resume()
       audio.previewGain.gain.value = 0
       tracksRef.current = []
       facesRef.current = []
       lastMediaTimeRef.current = -1
-      if (video.currentTime > 0.01) {
-        await new Promise<void>((resolve, reject) => {
-          const timeout = window.setTimeout(() => reject(new Error('Could not seek to the beginning of the video.')), 8000)
-          video.addEventListener('seeked', () => { clearTimeout(timeout); resolve() }, { once: true })
-          video.currentTime = 0
-        })
-      }
       drawFrame(true, 0)
 
       const canvasStream = canvas.captureStream(30)
@@ -381,21 +399,18 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
         }
         const type = recorder.mimeType || active.mimeType
         const extension = type.startsWith('video/mp4') ? 'mp4' : 'webm'
-        const blob = new Blob(active.chunks, { type })
-        const blobUrl = URL.createObjectURL(blob)
-        const link = document.createElement('a')
-        link.href = blobUrl
-        link.download = `${file.name.replace(/\.[^.]+$/, '')}-faces-hidden.${extension}`
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
-        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
-        setMessage(`Video saved as ${extension.toUpperCase()}. Review the result before sharing.`)
+        const edited = new File(active.chunks, `${file.name.replace(/\.[^.]+$/, '')}-faces-hidden.${extension}`, { type })
+        setReadyFile(edited)
+        if (!isTouchDevice()) downloadFile(edited)
+        setMessage(`Edited video ready as ${extension.toUpperCase()}. Review it before saving or sharing.`)
       }
       recorder.start(1000)
       setExporting(true)
-      setMessage('Exporting in real time. Keep this tab open until the download starts.')
-      await video.play()
+      setReadyToExport(false)
+      setMessage('Exporting in real time. Keep Faceveil open until the clip finishes.')
+      // Do not await resumeAudio before play: mobile playback may require this same tap.
+      const playVideo = video.play()
+      await Promise.all([resumeAudio, playVideo])
     } catch (caught) {
       const active = recordingRef.current
       cancelRecording(false)
@@ -420,12 +435,12 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
     if (!info || loading || exporting) return
     const position = point(event)
     const target = event.target as Element
-    const id = target.getAttribute('data-fixed-id')
-    const region = fixedRegions.find(item => item.id === id)
+    const hit = hitRegion(fixedRegions, selectedId, position, info, event.currentTarget)
+    const region = fixedRegions.find(item => item.id === target.getAttribute('data-fixed-id')) ?? hit?.region
     if (region) {
       videoRef.current?.pause()
-      setSelectedId(id)
-      interactionRef.current = { kind: target.hasAttribute('data-handle') ? 'resize' : 'move', id: region.id,
+      setSelectedId(region.id)
+      interactionRef.current = { kind: target.hasAttribute('data-handle') || (hit?.region.id === region.id && hit.kind === 'resize') ? 'resize' : 'move', id: region.id,
         x: position.x, y: position.y, original: region }
     } else if (addMode) {
       videoRef.current?.pause()
@@ -490,11 +505,6 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
       </div>
     </div>
 
-    <video ref={videoRef} src={url || undefined} className="source-video" preload="auto" playsInline
-      onLoadedMetadata={onMetadata} onLoadedData={() => { void onDataReady() }}
-      onPlay={() => { setPlaying(true); frameLoop() }} onPause={onPause} onEnded={onEnded}
-      onSeeked={onSeeked} onError={() => { setLoading(false); setError('This browser could not play the video. Try an MP4 or WebM file.') }} />
-
     <div className="editor-grid">
       <div className="canvas-panel">
         <div className="panel-toolbar">
@@ -506,6 +516,10 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
         <div className={`canvas-workspace video-workspace ${addMode ? 'adding' : ''}`}>
           <div className="image-frame" style={info ? { aspectRatio: `${info.width} / ${info.height}`,
             width: `min(100%, ${Math.round(650 * info.width / info.height)}px)` } : { aspectRatio: '16 / 9', width: '100%' }}>
+            <video ref={videoRef} src={url || undefined} className="source-video" preload="auto" playsInline
+              onLoadedMetadata={onMetadata} onLoadedData={() => { void onDataReady() }}
+              onPlay={() => { setPlaying(true); frameLoop() }} onPause={onPause} onEnded={onEnded}
+              onSeeked={onSeeked} onError={() => { setLoading(false); setError('This device could not play the video. Try an MP4 or WebM file.') }} />
             <canvas ref={previewRef} className="preview-canvas" aria-label="Edited video preview" />
             {info && <svg className="region-overlay" viewBox={`0 0 ${info.width} ${info.height}`} preserveAspectRatio="none"
               onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} aria-label="Video face areas">
@@ -519,7 +533,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
                 <text x={region.x + region.width / 2} y={Math.max(16, region.y - 8)} className="region-number"
                   fontSize={Math.max(15, Math.min(info.width, info.height) * 0.018)} textAnchor="middle">F{index + 1}</text>
                 {selectedId === region.id && <circle data-fixed-id={region.id} data-handle="resize"
-                  cx={region.x + region.width} cy={region.y + region.height} r={Math.max(8, Math.min(region.width, region.height) * .06)}
+                  cx={region.x + region.width} cy={region.y + region.height} r={Math.max(16, Math.min(region.width, region.height) * .06)}
                   className="resize-handle" />}
               </g>)}
             </svg>}
@@ -589,12 +603,20 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
           <div className="download-heading"><ShieldCheck size={19} /><span>Export your video</span></div>
           <p>Video exports at up to 720p, with the original audio. Processing takes about as long as the video.</p>
           <button className="button button-primary download-button" disabled={loading || exporting || !info || !!error && !detectorsRef.current}
-            onClick={() => { void exportVideo() }}><ArrowDownToLine size={19} /> {exporting ? `Exporting ${percent}%` : 'Download edited video'}</button>
+            onClick={() => { void exportVideo() }}><ArrowDownToLine size={19} /> {exporting ? `Exporting ${percent}%` : readyToExport ? 'Start export' : 'Create edited video'}</button>
           <span className="download-note">WebM or MP4 · format depends on your browser</span>
           {exporting && <button className="video-cancel" onClick={() => { cancelRecording(false); videoRef.current?.pause(); setMessage('Export canceled.') }}>Cancel export</button>}
         </div>
       </aside>
     </div>
+    {readyFile && readyUrl && <section className="export-review" aria-label="Review edited video">
+      <h2>Review the finished clip</h2>
+      <video src={readyUrl} controls playsInline preload="metadata" aria-label="Finished video" />
+      <div className="mobile-save-actions">
+        <button className="button button-primary" onClick={() => downloadFile(readyFile)}>Save file</button>
+        {canShareFile(readyFile) && <button className="button button-outline" onClick={() => { void shareFile(readyFile).catch(caught => setError(caught instanceof Error ? caught.message : 'Could not share this video.')) }}>Share</button>}
+      </div>
+    </section>}
     {message && <div className="alert alert-info" role="status"><Check size={16} />{message}</div>}
     {error && <div className="alert alert-error" role="alert">{error}</div>}
     <div className="video-review-note">Review the entire exported video before sharing. Detection may miss a face in some frames, especially if it turns away or is partly hidden.</div>

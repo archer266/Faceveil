@@ -1,5 +1,13 @@
 node_modules/
+node_modules
 dist/
 .DS_Store
 *.local
 *.tsbuildinfo
+*.keystore
+*.jks
+android/twa/.gradle/
+android/twa/build/
+android/twa/app/build/
+android/twa/*.apk
+android/twa/*.aab

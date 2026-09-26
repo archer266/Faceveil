@@ -8,6 +8,8 @@ import { detectFaces } from './faceDetection'
 import { clamp, normalizeBox, type ImageSize, type Region } from './geometry'
 import { renderImage, type Effect } from './processImage'
 import VideoEditor from './VideoEditor'
+import { canShareFile, downloadFile, isTouchDevice, shareFile } from './mobileMedia'
+import { hitRegion } from './touchRegions'
 
 type ImageInfo = ImageSize & { name: string; bytes: number }
 type Interaction =
@@ -24,6 +26,8 @@ function formatBytes(bytes: number) {
 
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null)
+  const cameraPhotoRef = useRef<HTMLInputElement>(null)
+  const cameraVideoRef = useRef<HTMLInputElement>(null)
   const sourceRef = useRef<HTMLCanvasElement | null>(null)
   const previewRef = useRef<HTMLCanvasElement>(null)
   const exportRef = useRef<HTMLCanvasElement | null>(null)
@@ -43,8 +47,11 @@ export default function App() {
   const [draggingFile, setDraggingFile] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [preparedPhoto, setPreparedPhoto] = useState<File | null>(null)
 
   const activeCount = regions.filter(region => region.enabled).length
+
+  useEffect(() => { setPreparedPhoto(null) }, [image, regions, effect, strength, padding])
 
   useEffect(() => {
     const source = sourceRef.current
@@ -113,6 +120,7 @@ export default function App() {
       setBusy(false)
       setError('')
       setMessage('')
+      setPreparedPhoto(null)
       setVideoRevision(value => value + 1)
       setVideoFile(file)
       return
@@ -190,13 +198,12 @@ export default function App() {
     if (!image || busy) return
     const position = point(event)
     const target = event.target as Element
-    const id = target.getAttribute('data-region-id')
-    const handle = target.getAttribute('data-handle')
-    const region = regions.find(item => item.id === id)
+    const hit = hitRegion(regions, selectedId, position, image, event.currentTarget)
+    const region = regions.find(item => item.id === target.getAttribute('data-region-id')) ?? hit?.region
     if (region) {
       setSelectedId(region.id)
       interactionRef.current = {
-        kind: handle ? 'resize' : 'move', id: region.id,
+        kind: target.hasAttribute('data-handle') || (hit?.region.id === region.id && hit.kind === 'resize') ? 'resize' : 'move', id: region.id,
         startX: position.x, startY: position.y, original: region,
       }
     } else if (addMode) {
@@ -257,7 +264,7 @@ export default function App() {
     }
   }
 
-  function download() {
+  function preparePhoto() {
     if (!sourceRef.current || !image || busy) return
     try {
       const output = exportRef.current ?? document.createElement('canvas')
@@ -268,14 +275,10 @@ export default function App() {
           setError('Could not create the download. Try a smaller photo.')
           return
         }
-        const url = URL.createObjectURL(blob)
-        const link = document.createElement('a')
-        link.href = url
-        link.download = `${image.name.replace(/\.[^.]+$/, '')}-faces-hidden.png`
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
-        window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+        const file = new File([blob], `${image.name.replace(/\.[^.]+$/, '')}-faces-hidden.png`, { type: 'image/png' })
+        setPreparedPhoto(file)
+        if (!isTouchDevice()) downloadFile(file)
+        else setMessage('Edited photo ready. Save it to your device or share it.')
       }, 'image/png')
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not create the download.')
@@ -292,6 +295,7 @@ export default function App() {
     setError('')
     setMessage('')
     setSelectedId(null)
+    setPreparedPhoto(null)
   }
 
   return (
@@ -324,6 +328,8 @@ export default function App() {
         </div>
 
         <input ref={inputRef} type="file" accept="image/*,video/*,.mov" hidden onChange={onInput} aria-label="Choose photo or video" />
+        <input ref={cameraPhotoRef} type="file" accept="image/*" capture="environment" hidden onChange={onInput} aria-label="Take a photo" />
+        <input ref={cameraVideoRef} type="file" accept="video/*" capture="environment" hidden onChange={onInput} aria-label="Record a video" />
 
         {videoFile ? <>
           <VideoEditor key={videoRevision} file={videoFile} onReplace={() => inputRef.current?.click()}
@@ -334,11 +340,15 @@ export default function App() {
             onDragLeave={() => setDraggingFile(false)} onDrop={onDrop}>
             <div className="upload-pattern" aria-hidden="true" />
             <div className="upload-icon"><ImagePlus size={30} strokeWidth={1.8} /></div>
-            <h2>Drop a photo or video here</h2>
-            <p>Or choose one from your device. We’ll look for faces automatically.</p>
+            <h2>Choose a photo or video</h2>
+            <p>Open one from your device. We’ll look for faces automatically.</p>
             <button className="button button-primary upload-button" onClick={() => inputRef.current?.click()}>
               <Upload size={18} /> Choose a file
             </button>
+            <div className="camera-actions">
+              <button className="button button-quiet" onClick={() => cameraPhotoRef.current?.click()}>Take photo</button>
+              <button className="button button-quiet" onClick={() => cameraVideoRef.current?.click()}>Record video</button>
+            </div>
             <span className="file-note">Photos up to 40 MB · videos up to 500 MB · MP4 or WebM works best</span>
             {busy && <div className="upload-status" role="status">{message}</div>}
             {error && <div className="alert alert-error upload-alert" role="alert">{error}</div>}
@@ -385,7 +395,7 @@ export default function App() {
                           <text x={region.x + region.width / 2} y={Math.max(16, region.y - 8)} className="region-number"
                             fontSize={Math.max(15, Math.min(image.width, image.height) * 0.018)} textAnchor="middle">{index + 1}</text>
                           {selected && <circle data-region-id={region.id} data-handle="resize"
-                            cx={region.x + region.width} cy={region.y + region.height} r={handleSize}
+                            cx={region.x + region.width} cy={region.y + region.height} r={Math.max(16, handleSize)}
                             className="resize-handle" />}
                         </g>
                       })}
@@ -395,7 +405,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="canvas-footer">
-                  <span><MousePointer2 size={15} /> {addMode ? 'Click and drag over a face to add an area' : 'Click an area to select it, then drag to move'}</span>
+                  <span><MousePointer2 size={15} /> {addMode ? 'Drag over a face to add an area' : 'Touch an area, then drag to move'}</span>
                   <span>{image.width} × {image.height}</span>
                 </div>
               </div>
@@ -455,10 +465,14 @@ export default function App() {
                 <div className="download-section">
                   <div className="download-heading"><ShieldCheck size={19} /><span>Ready when you are</span></div>
                   <p>Look over the photo once more. Automatic detection can miss faces.</p>
-                  <button className="button button-primary download-button" disabled={busy || activeCount === 0} onClick={download}>
-                    <ArrowDownToLine size={19} /> Download edited photo
+                  <button className="button button-primary download-button" disabled={busy || activeCount === 0} onClick={preparePhoto}>
+                    <ArrowDownToLine size={19} /> {isTouchDevice() ? 'Create edited photo' : 'Download edited photo'}
                   </button>
-                  <span className="download-note">Full resolution PNG · saved to your device</span>
+                  {preparedPhoto && isTouchDevice() && <div className="mobile-save-actions">
+                    <button className="button button-outline" onClick={() => downloadFile(preparedPhoto)}>Save file</button>
+                    {canShareFile(preparedPhoto) && <button className="button button-outline" onClick={() => { void shareFile(preparedPhoto).catch(caught => setError(caught instanceof Error ? caught.message : 'Could not share this photo.')) }}>Share</button>}
+                  </div>}
+                  <span className="download-note">Full resolution PNG · review before sharing</span>
                 </div>
               </aside>
             </div>
@@ -470,7 +484,7 @@ export default function App() {
         <section className="info-section wrap" id="how-it-works">
           <div className="info-heading"><span className="eyebrow">SIMPLE BY DESIGN</span><h2>Privacy, with the final say in your hands.</h2></div>
           <div className="info-cards">
-            <article><span className="info-icon"><Upload size={20} /></span><span className="card-number">01</span><h3>Choose a file</h3><p>Open a photo or video from your computer. It is processed in your browser.</p></article>
+            <article><span className="info-icon"><Upload size={20} /></span><span className="card-number">01</span><h3>Choose a file</h3><p>Open a photo or video from your device. It is processed locally.</p></article>
             <article><span className="info-icon"><ScanFace size={20} /></span><span className="card-number">02</span><h3>Check the faces</h3><p>Detection marks faces. Add areas manually if anything is missed.</p></article>
             <article><span className="info-icon"><LockKeyhole size={20} /></span><span className="card-number">03</span><h3>Save with confidence</h3><p>Choose blur, pixelation, or a solid cover, then download the result.</p></article>
           </div>
