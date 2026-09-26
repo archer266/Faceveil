@@ -6,9 +6,14 @@ The Play Store package uses a **Trusted Web Activity (TWA)**. The TWA opens this
 
 ## Try the installable web app first
 
-1. Run `npm.cmd install` and `npm.cmd run build` in PowerShell. Upload the **contents** of `dist/` to a static HTTPS site, with `index.html` at the app's chosen URL. Serve `.webmanifest` as `application/manifest+json`, `.js` as JavaScript, `.wasm` as `application/wasm`, and `.tflite` as a binary asset. Avoid routing these asset URLs to `index.html`.
-2. In Chrome on an Android phone, open the HTTPS site and use **Install app** from Chrome's menu. Choose a photo or video, or tap **Take photo** / **Record video**. Check the edited result, then tap **Save file** or **Share**.
-3. Test a short Android camera clip with sound and a photo from the camera. Video export runs in real time; keep the app open and the screen awake until it finishes. Chrome chooses the supported output format, often WebM. Verify playback, sound, redaction, and file saving on the target phone.
+The repository includes `render.yaml` for a free Render static site. Connect the Faceveil GitHub repository to Render, select the Android feature branch while it is under review, and deploy the Blueprint. Render provides a unique HTTPS `onrender.com` address. After merging the Android changes into `main`, change the site's deployed branch to `main`. Static site traffic and build time count toward Render's free workspace allowances.
+
+You can also run `npm.cmd install` and `npm.cmd run build` in PowerShell, then upload the **contents** of `dist/` to another static HTTPS site, with `index.html` at the app's chosen URL. Serve `.webmanifest` as `application/manifest+json`, `.js` as JavaScript, `.wasm` as `application/wasm`, and `.tflite` as a binary asset. Avoid routing these asset URLs to `index.html`.
+
+After the HTTPS site is live:
+
+1. In Chrome on an Android phone, open the HTTPS site and use **Install app** from Chrome's menu. Choose a photo or video, or tap **Take photo** / **Record video**. Check the edited result, then tap **Save file** or **Share**.
+2. Test a short Android camera clip with sound and a photo from the camera. Video export runs in real time; keep the app open and the screen awake until it finishes. Chrome chooses the supported output format, often WebM. Verify playback, sound, redaction, and file saving on the target phone.
 
 The worker caches application assets after the first successful online load, including the face models and MediaPipe runtime. Available device storage determines whether every asset is retained. Keep the public site reachable for updates and fresh installs. Files selected by the user stay in device memory during editing; this app does not upload them.
 
