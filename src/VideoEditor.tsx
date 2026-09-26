@@ -8,6 +8,7 @@ import { clamp, normalizeBox, type Region } from './geometry'
 import { renderImage, type Effect } from './processImage'
 import { detectVideoFaces, loadVideoDetectors, type VideoDetectors } from './videoDetection'
 import { updateTracks, type FaceTrack } from './videoTracking'
+import { newRegionId } from './ids'
 
 type Props = { file: File; onReplace: () => void; onClose: () => void }
 type VideoInfo = { width: number; height: number; duration: number }
@@ -117,6 +118,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.previewGain.gain.value = muted || exporting ? 0 : 1
+    else if (videoRef.current) videoRef.current.muted = muted
   }, [muted, exporting])
 
   useEffect(() => {
@@ -215,7 +217,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
 
   function onMetadata() {
     const video = videoRef.current
-    if (!video || !video.videoWidth || !video.videoHeight || !Number.isFinite(video.duration)) {
+    if (!video || !video.videoWidth || !video.videoHeight) {
       setError('This video could not be decoded by your browser. Try an MP4 or WebM file.')
       setLoading(false)
       return
@@ -228,7 +230,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
     source.height = height
     sourceRef.current = source
     if (previewRef.current) { previewRef.current.width = width; previewRef.current.height = height }
-    setInfo({ width, height, duration: video.duration })
+    setInfo({ width, height, duration: Number.isFinite(video.duration) ? video.duration : 0 })
   }
 
   async function onDataReady() {
@@ -244,7 +246,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
     } catch (caught) {
       if (!aliveRef.current) return
       console.error('Video detector failed', caught)
-      setError('Face detection could not start. Check the bundled model files and reload the app.')
+      setMessage('Automatic detection is unavailable here. You can add fixed areas manually and export the edited video.')
       setLoading(false)
       drawFrame(false)
     }
@@ -283,6 +285,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
     if (!video) throw new Error('The video is not ready.')
     const context = new AudioContext()
     const source = context.createMediaElementSource(video)
+    video.muted = false
     const previewGain = context.createGain()
     const destination = context.createMediaStreamDestination()
     source.connect(previewGain)
@@ -295,10 +298,9 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
 
   async function togglePlay() {
     const video = videoRef.current
-    if (!video || loading || exporting || !detectorsRef.current) return
+    if (!video || loading || exporting) return
     if (!video.paused) { video.pause(); return }
     try {
-      await ensureAudio().context.resume()
       await video.play()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not play this video.')
@@ -325,7 +327,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
   async function exportVideo() {
     const video = videoRef.current
     const canvas = previewRef.current
-    if (!video || !canvas || !info || loading || exporting || !detectorsRef.current) return
+    if (!video || !canvas || !info || loading || exporting || (!detectorsRef.current && !fixedRegions.some(region => region.enabled))) return
     const mimeType = recordingType()
     if (!mimeType || typeof canvas.captureStream !== 'function') {
       setError('This browser cannot export video. Try the latest Chrome or Edge.')
@@ -429,7 +431,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
         x: position.x, y: position.y, original: region }
     } else if (addMode) {
       videoRef.current?.pause()
-      const newId = crypto.randomUUID()
+      const newId = newRegionId()
       interactionRef.current = { kind: 'draw', id: newId, x: position.x, y: position.y }
       setFixedRegions(current => [...current, { id: newId, x: position.x, y: position.y,
         width: 1, height: 1, source: 'manual', enabled: true }])
@@ -461,14 +463,17 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
 
   function pointerUp(event: PointerEvent<SVGSVGElement>) {
     const action = interactionRef.current
-    if (!action) return
+    if (!action || !info) return
     interactionRef.current = null
     if (action.kind === 'draw') {
-      const added = fixedRegions.find(region => region.id === action.id)
-      if (!added || added.width < 12 || added.height < 12) {
+      const position = point(event)
+      const box = normalizeBox(action.x, action.y,
+        position.x - action.x, position.y - action.y, info)
+      if (box.width < 12 || box.height < 12) {
         setFixedRegions(current => current.filter(region => region.id !== action.id))
         setSelectedId(null)
       } else {
+        setFixedRegions(current => current.map(region => region.id === action.id ? { ...region, ...box } : region))
         setAddMode(false)
         setMessage('Fixed area added. It stays in the same place throughout the video.')
       }
@@ -491,7 +496,10 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
     </div>
 
     <video ref={videoRef} src={url || undefined} className="source-video" preload="auto" playsInline
-      onLoadedMetadata={onMetadata} onLoadedData={() => { void onDataReady() }}
+      onLoadedMetadata={onMetadata} onDurationChange={() => {
+        const duration = videoRef.current?.duration
+        if (duration && Number.isFinite(duration)) setInfo(current => current && { ...current, duration })
+      }} onLoadedData={() => { void onDataReady() }}
       onPlay={() => { setPlaying(true); frameLoop() }} onPause={onPause} onEnded={onEnded}
       onSeeked={onSeeked} onError={() => { setLoading(false); setError('This browser could not play the video. Try an MP4 or WebM file.') }} />
 
@@ -544,7 +552,9 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
       <aside className="tools-panel" aria-label="Video editing tools">
         <div className="tool-section face-section">
           <div className="section-title"><span><ScanFace size={18} /> Face areas</span><span className="count-pill">{displayFaces.length} tracked</span></div>
-          <p className="section-copy">Faces are detected as the video plays. Scrub through the clip and check for missed frames.</p>
+          <p className="section-copy">{detectorsRef.current
+            ? 'Faces are detected as the video plays. Scrub through the clip and check for missed frames.'
+            : 'Add fixed areas to hide parts of the video. They stay in one place as the video plays.'}</p>
           <div className="video-stat"><span className="video-stat-dot" /> {displayFaces.length} {displayFaces.length === 1 ? 'face' : 'faces'} in this frame</div>
           <div className="fixed-heading">Fixed areas <span>{fixedCount}</span></div>
           {fixedRegions.length ? <div className="region-list">
@@ -588,7 +598,7 @@ export default function VideoEditor({ file, onReplace, onClose }: Props) {
         <div className="download-section">
           <div className="download-heading"><ShieldCheck size={19} /><span>Export your video</span></div>
           <p>Video exports at up to 720p, with the original audio. Processing takes about as long as the video.</p>
-          <button className="button button-primary download-button" disabled={loading || exporting || !info || !!error && !detectorsRef.current}
+          <button className="button button-primary download-button" disabled={loading || exporting || !info || (!detectorsRef.current && !fixedCount)}
             onClick={() => { void exportVideo() }}><ArrowDownToLine size={19} /> {exporting ? `Exporting ${percent}%` : 'Download edited video'}</button>
           <span className="download-note">WebM or MP4 · format depends on your browser</span>
           {exporting && <button className="video-cancel" onClick={() => { cancelRecording(false); videoRef.current?.pause(); setMessage('Export canceled.') }}>Cancel export</button>}

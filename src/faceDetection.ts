@@ -1,5 +1,6 @@
 import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
 import { normalizeBox, overlapRatio, type Region } from './geometry'
+import { newRegionId } from './ids'
 
 let detectorsPromise: Promise<FaceDetector[]> | null = null
 
@@ -58,7 +59,7 @@ export async function detectFaces(source: HTMLCanvasElement): Promise<Region[]> 
         source,
       )
       if (scaled.width < 12 || scaled.height < 12) continue
-      candidates.push({ ...scaled, id: crypto.randomUUID(), source: 'auto', enabled: true,
+      candidates.push({ ...scaled, id: newRegionId(), source: 'auto', enabled: true,
         score: detection.categories[0]?.score ?? 0 })
     }
   }

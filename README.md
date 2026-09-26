@@ -17,6 +17,12 @@ A browser app for automatically detecting and hiding faces in photos and videos.
 
 The `npm.cmd` form works in PowerShell even when `.ps1` scripts are disabled. Use Node.js 18 or Node.js 20+. To make a production build, run `npm.cmd run build`; its output is in `dist`.
 
+## Test on a phone
+
+Connect your phone and computer to the same Wi-Fi, run `npm.cmd run dev` on the computer, and open the **Network** URL printed by Vite in your phone's browser (for example, `http://192.168.1.42:5173`). Keep the terminal running. If the page will not load, allow Node.js through the Windows firewall on private networks and make sure neither device is on a guest Wi-Fi network. After replacing the app files, refresh the phone tab to load the new version.
+
+On phones, large photos are reduced to at most 4096 pixels on the long side and 16 megapixels before editing and export so the browser is less likely to run out of memory. Smaller photos keep their original resolution. If automatic detection is unavailable, use **Add face area** for photos or **Add fixed area** for videos. Fixed video areas do not follow moving faces. Video export requires browser support for canvas recording; try a short MP4 in Chrome on Android first.
+
 ## Use it
 
 ### Photos
@@ -24,7 +30,7 @@ The `npm.cmd` form works in PowerShell even when `.ps1` scripts are disabled. Us
 1. Drop or choose a photo. Face detection starts automatically.
 2. Check every face. Use **Add face area** to drag a new area over a missed face. Click and drag a marked area to move it; select it and drag its bottom-right handle to resize. The list can disable or remove areas. Press Delete to remove a selected area.
 3. Choose **Blur**, **Pixelate**, or **Cover**. Adjust strength and padding. Use **Show original** to compare.
-4. Download a full-resolution PNG.
+4. Download a PNG at the processed resolution.
 
 ### Videos
 

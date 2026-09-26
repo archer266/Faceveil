@@ -8,6 +8,8 @@ import { detectFaces } from './faceDetection'
 import { clamp, normalizeBox, type ImageSize, type Region } from './geometry'
 import { renderImage, type Effect } from './processImage'
 import VideoEditor from './VideoEditor'
+import { newRegionId } from './ids'
+import { makePreviewSource, openPhotoCanvas } from './photo'
 
 type ImageInfo = ImageSize & { name: string; bytes: number }
 type Interaction =
@@ -15,7 +17,6 @@ type Interaction =
   | { kind: 'move' | 'resize'; id: string; startX: number; startY: number; original: Region }
 
 const MAX_BYTES = 40 * 1024 * 1024
-const MAX_PIXELS = 40_000_000
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024
 
 function formatBytes(bytes: number) {
@@ -25,6 +26,7 @@ function formatBytes(bytes: number) {
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null)
   const sourceRef = useRef<HTMLCanvasElement | null>(null)
+  const previewSourceRef = useRef<HTMLCanvasElement | null>(null)
   const previewRef = useRef<HTMLCanvasElement>(null)
   const exportRef = useRef<HTMLCanvasElement | null>(null)
   const generationRef = useRef(0)
@@ -47,7 +49,7 @@ export default function App() {
   const activeCount = regions.filter(region => region.enabled).length
 
   useEffect(() => {
-    const source = sourceRef.current
+    const source = previewSourceRef.current
     const preview = previewRef.current
     if (!source || !preview || !image) return
     if (showOriginal) {
@@ -55,7 +57,12 @@ export default function App() {
       preview.height = source.height
       preview.getContext('2d')?.drawImage(source, 0, 0)
     } else {
-      renderImage(source, preview, regions, effect, strength, padding)
+      const scaleX = source.width / image.width
+      const scaleY = source.height / image.height
+      const previewRegions = regions.map(region => ({ ...region,
+        x: region.x * scaleX, y: region.y * scaleY,
+        width: region.width * scaleX, height: region.height * scaleY }))
+      renderImage(source, preview, previewRegions, effect, strength, padding)
     }
   }, [image, regions, effect, strength, padding, showOriginal])
 
@@ -75,7 +82,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [selectedId])
 
-  async function scan(source: HTMLCanvasElement, generation: number) {
+  async function scan(source: HTMLCanvasElement, generation: number, resolutionNote = '') {
     setBusy(true)
     setMessage('Finding faces in your photo…')
     setError('')
@@ -84,13 +91,13 @@ export default function App() {
       if (generation !== generationRef.current) return
       setRegions(found)
       setSelectedId(null)
-      setMessage(found.length
+      setMessage((found.length
         ? `${found.length} ${found.length === 1 ? 'face' : 'faces'} detected. Check every face before downloading.`
-        : 'No faces detected. Use Add face area to mark faces yourself.')
+        : 'No faces detected. Use Add face area to mark faces yourself.') + resolutionNote)
     } catch (caught) {
       if (generation !== generationRef.current) return
       console.error('Face detection failed', caught)
-      setError('Automatic detection could not start. Check that the model files are present, then try Scan again. You can still add face areas manually.')
+      setError('Automatic detection is unavailable in this browser. You can still add face areas manually.')
       setMessage('')
     } finally {
       if (generation === generationRef.current) setBusy(false)
@@ -108,6 +115,7 @@ export default function App() {
       }
       generationRef.current++
       sourceRef.current = null
+      previewSourceRef.current = null
       exportRef.current = null
       setImage(null)
       setBusy(false)
@@ -130,30 +138,18 @@ export default function App() {
     setError('')
     setMessage('Opening your photo…')
     try {
-      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
-      if (bitmap.width * bitmap.height > MAX_PIXELS) {
-        bitmap.close()
-        throw new Error('This image is over 40 megapixels. Please resize it before opening.')
-      }
-      if (generation !== generationRef.current) {
-        bitmap.close()
-        return
-      }
-      const canvas = document.createElement('canvas')
-      canvas.width = bitmap.width
-      canvas.height = bitmap.height
-      const context = canvas.getContext('2d')
-      if (!context) throw new Error('Your browser could not open a canvas for this photo.')
-      context.drawImage(bitmap, 0, 0)
-      bitmap.close()
+      const { canvas, reduced } = await openPhotoCanvas(file, matchMedia('(pointer: coarse)').matches)
+      if (generation !== generationRef.current) return
+      const previewSource = makePreviewSource(canvas)
       sourceRef.current = canvas
+      previewSourceRef.current = previewSource
       setVideoFile(null)
       setImage({ name: file.name, bytes: file.size, width: canvas.width, height: canvas.height })
       setRegions([])
       setSelectedId(null)
       setShowOriginal(false)
       setAddMode(false)
-      await scan(canvas, generation)
+      await scan(canvas, generation, reduced ? ' Photo resolution was reduced for phone performance.' : '')
     } catch (caught) {
       if (generation !== generationRef.current) return
       setBusy(false)
@@ -200,7 +196,7 @@ export default function App() {
         startX: position.x, startY: position.y, original: region,
       }
     } else if (addMode) {
-      const newId = crypto.randomUUID()
+      const newId = newRegionId()
       interactionRef.current = { kind: 'draw', id: newId, startX: position.x, startY: position.y }
       setRegions(current => [...current, {
         id: newId, x: position.x, y: position.y, width: 1, height: 1,
@@ -240,14 +236,17 @@ export default function App() {
 
   function pointerUp(event: PointerEvent<SVGSVGElement>) {
     const action = interactionRef.current
-    if (!action) return
+    if (!action || !image) return
     interactionRef.current = null
     if (action.kind === 'draw') {
-      const added = regions.find(region => region.id === action.id)
-      if (!added || added.width < 12 || added.height < 12) {
+      const position = point(event)
+      const box = normalizeBox(action.startX, action.startY,
+        position.x - action.startX, position.y - action.startY, image)
+      if (box.width < 12 || box.height < 12) {
         setRegions(current => current.filter(region => region.id !== action.id))
         setSelectedId(null)
       } else {
+        setRegions(current => current.map(region => region.id === action.id ? { ...region, ...box } : region))
         setMessage('Face area added. Drag it to move, or use the corner handle to resize.')
         setAddMode(false)
       }
@@ -285,6 +284,7 @@ export default function App() {
   function closeImage() {
     generationRef.current++
     sourceRef.current = null
+    previewSourceRef.current = null
     exportRef.current = null
     setImage(null)
     setRegions([])
@@ -395,7 +395,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="canvas-footer">
-                  <span><MousePointer2 size={15} /> {addMode ? 'Click and drag over a face to add an area' : 'Click an area to select it, then drag to move'}</span>
+                  <span><MousePointer2 size={15} /> {addMode ? 'Drag over a face to add an area' : 'Tap an area to select it, then drag to move'}</span>
                   <span>{image.width} × {image.height}</span>
                 </div>
               </div>
@@ -470,7 +470,7 @@ export default function App() {
         <section className="info-section wrap" id="how-it-works">
           <div className="info-heading"><span className="eyebrow">SIMPLE BY DESIGN</span><h2>Privacy, with the final say in your hands.</h2></div>
           <div className="info-cards">
-            <article><span className="info-icon"><Upload size={20} /></span><span className="card-number">01</span><h3>Choose a file</h3><p>Open a photo or video from your computer. It is processed in your browser.</p></article>
+            <article><span className="info-icon"><Upload size={20} /></span><span className="card-number">01</span><h3>Choose a file</h3><p>Open a photo or video from your device. It is processed in your browser.</p></article>
             <article><span className="info-icon"><ScanFace size={20} /></span><span className="card-number">02</span><h3>Check the faces</h3><p>Detection marks faces. Add areas manually if anything is missed.</p></article>
             <article><span className="info-icon"><LockKeyhole size={20} /></span><span className="card-number">03</span><h3>Save with confidence</h3><p>Choose blur, pixelation, or a solid cover, then download the result.</p></article>
           </div>

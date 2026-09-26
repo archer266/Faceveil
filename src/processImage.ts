@@ -53,6 +53,11 @@ export function renderImage(
         ctx.imageSmoothingEnabled = false
         ctx.drawImage(tiny, box.x, box.y, box.width, box.height)
       }
+    } else if (typeof Reflect.get(ctx, 'filter') !== 'string') {
+      // A few mobile canvas implementations do not support 2D filters. Never
+      // export the untouched face when a requested blur cannot be applied.
+      ctx.fillStyle = '#1b2230'
+      ctx.fillRect(box.x, box.y, box.width, box.height)
     } else {
       // Sample a larger source area so blur at the oval edge has neighboring pixels.
       const radius = Math.max(12, Math.round(Math.min(box.width, box.height) * (0.13 + strength * 0.0045)))

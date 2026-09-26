@@ -1,5 +1,6 @@
 import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
 import { normalizeBox, overlapRatio, type Region } from './geometry'
+import { newRegionId } from './ids'
 
 export type VideoDetectors = { full: FaceDetector; short: FaceDetector }
 
@@ -36,7 +37,7 @@ export function detectVideoFaces(detectors: VideoDetectors, frame: HTMLCanvasEle
       if (!box) continue
       const bounds = normalizeBox(box.originX, box.originY, box.width, box.height, frame)
       if (bounds.width < 12 || bounds.height < 12) continue
-      candidates.push({ ...bounds, id: crypto.randomUUID(), source: 'auto', enabled: true,
+      candidates.push({ ...bounds, id: newRegionId(), source: 'auto', enabled: true,
         score: detection.categories[0]?.score ?? 0 })
     }
   }
