@@ -15,7 +15,27 @@ A browser app for automatically detecting and hiding faces in photos and videos.
 
 4. Open the local URL shown in the terminal, usually `http://localhost:5173`.
 
-The `npm.cmd` form works in PowerShell even when `.ps1` scripts are disabled. Use Node.js 18 or Node.js 20+. To make a production build, run `npm.cmd run build`; its output is in `dist`.
+The `npm.cmd` form works in PowerShell even when `.ps1` scripts are disabled. The web app works with Node.js 18 or later; building the Android app with Capacitor 8 requires Node.js 22 or later. To make a web production build, run `npm.cmd run build`; its output is in `dist`.
+
+## Run the Android app on your phone
+
+Install [Node.js 22 or later](https://nodejs.org/en/download) and [Android Studio](https://developer.android.com/studio), including the Android SDK. Android Studio's **Tools → SDK Manager** should have Android 16 (API 36) installed. You do not need to install Java separately.
+
+1. In VS Code, open the **Faceveil repo folder** (the one containing `package.json`). If you already have an older checkout, run `git pull origin main` first.
+2. In a new PowerShell terminal, run:
+
+   ```powershell
+   npm.cmd install
+   npm.cmd run android:sync
+   npm.cmd run android:open
+   ```
+
+3. Let Android Studio finish Gradle sync and install any SDK components it requests. On your Android phone, enable **Developer options → USB debugging**, plug it into the computer, and accept the debugging prompt on the phone.
+4. Select the phone in Android Studio's device selector and press **Run** (the green triangle). Android Studio builds and installs a debug app called Faceveil. If Windows does not see your phone, see [Google's device setup guide](https://developer.android.com/studio/run/device).
+
+After a web code change, run `npm.cmd run android:sync` again, then **Run** in Android Studio. The `android/` folder is the tracked native project. `android:sync` rebuilds the site and copies it into the app; it does not install it on your phone.
+
+Test a small photo and a short MP4 first: choose a file, check the detected faces, export, and confirm that the saved result actually opens. The Android WebView may handle canvas recording and Blob downloads differently from Chrome. An Android build is not verified for video export until this device test succeeds.
 
 ## Test on a phone
 
